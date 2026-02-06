@@ -5,6 +5,7 @@ import { argv } from 'node:process'
 // Node's wrapper around the C++ Gzip library
 import zlib from 'node:zlib'
 
+export default zip
 function formatBytes(fileSizeInBytes, decimal = 2) {
   if (fileSizeInBytes === 0) { return '0 Bytes' }
 
@@ -37,7 +38,7 @@ try {
     throw new Error(`The Input file path ${outputPath} is a directory. Please provide a file name`)
   }
 
-  if (path.extname(outputPath) === ".gz") {
+  if (path.extname(outputPath) !== ".gz") {
     throw new Error(`Output file name must have an extension with .gz (e.g., output.gz)`)
   }
 
