@@ -1,7 +1,7 @@
 import net from 'node:net'
 
 const server = net.createServer((socket) => {
-  console.log('Client connected')
+  console.log('Client connected.')
 
   let buffer = ""
   socket.on('data', (chunk) => {
@@ -13,12 +13,16 @@ const server = net.createServer((socket) => {
       buffer = buffer.slice(index + 2)
 
       console.log(message)
-      // socket.write('Hello client\r\n')
+      socket.write('Hello from the server!\r\n')
     }
   })
 
   socket.on('end', () => {
-    console.log('Client has disconnected')
+    console.log('Client has disconnected.')
+  })
+
+  socket.on('error', (error) => {
+    console.log(`Client is facing some issues ${error.message}`)
   })
 })
 
