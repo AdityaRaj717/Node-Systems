@@ -21,7 +21,7 @@ function tryParseRESP(buffer) {
 
   offset = headerEnd + 2;
 
-  const args = [];
+  let args = [];
 
   for (let i = 0; i < argCount; i++) {
     if (buffer.length <= offset) return null;
@@ -62,9 +62,13 @@ function tryParseRESP(buffer) {
 const server = net.createServer((socket) => {
   console.log("Client connected.");
 
+
+  // NOTE: Buffering the stream of bytes
+
   let buffer = Buffer.alloc(0);
 
   socket.on("data", (chunk) => {
+
     // Append raw bytes (no decoding)
     buffer = Buffer.concat([buffer, chunk]);
 

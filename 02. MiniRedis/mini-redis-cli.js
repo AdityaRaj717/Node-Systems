@@ -1,4 +1,5 @@
 import net from "node:net";
+import { off } from "node:process";
 import * as readline from "node:readline";
 
 const rl = readline.createInterface({
@@ -6,6 +7,26 @@ const rl = readline.createInterface({
   output: process.stdout,
   prompt: "mini-redis> ",
 });
+
+function tryParseRESP(buffer) {
+  // NOTE: Checks whether the bytes are enough for parsing
+  // If it is then it parses
+
+  // +OK\r\n
+
+  let offset = 0
+
+  if (buffer.length < 1) return null;
+
+  const bulkEnd = buffer.indexOf('\r\n')
+  if (bulkEnd === -1) return null
+
+  let bulk = buffer.slice(offset, bulkEnd)
+
+  offset = bulkEnd + 2
+
+  return { bulk, bytesConsumed: offset }
+}
 
 // Convert into tokens
 // Ex. ["SET", "key", "value"]
@@ -52,18 +73,19 @@ const client = net.createConnection(6379, "localhost", () => {
   rl.prompt();
 });
 
-// Buffering
-let buffer = "";
-client.on("data", (chunk) => {
-  buffer += chunk.toString();
+// NOTE: Buffering the stream of bytes
+// Initialize an empty buffer
+// Buffer is a subclass of the Uint8Array and has extra methods
+// like writeUInt32BE, readInt16LE, toString() etc
 
-  while (buffer.includes("\r\n")) {
-    const index = buffer.indexOf("\r\n");
-    const message = buffer.slice(0, index);
-    buffer = buffer.slice(index + 2);
-    console.log(message);
-    rl.prompt();
-  }
+let buffer = Buffer.alloc(0);
+
+client.on("data", (chunk) => {
+  buffer = Buffer.concat([buffer, chunk]);
+
+  const result = tryParseRESP(buffer);
+  console.log(result);
+  rl.prompt();
 });
 
 rl.on("line", (line) => {
