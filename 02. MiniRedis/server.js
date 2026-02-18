@@ -1,5 +1,7 @@
 import net from "node:net";
 
+const redisStorage = new Map()
+
 function tryParseRESP(buffer) {
   let offset = 0;
 
@@ -59,6 +61,44 @@ function tryParseRESP(buffer) {
   };
 }
 
+function handlePING(commandObject) {
+  return '+PONG\r\n'
+}
+
+function handleSET({ key, value, options }) {
+  redisStorage.set(key, value)
+  return '+OK\r\n'
+}
+
+function handleGET({ key }) {
+  console.log(`+${redisStorage.get(key)}\r\n`)
+  return `+${redisStorage.get(key)}\r\n`
+}
+
+function handleCommand(stringArgs) {
+  // PING
+  // SET key value EX 10
+  let command, key, value, expiration
+
+  let commandObject = {
+    command: stringArgs[0].toUpperCase(),
+    key: stringArgs[1],
+    value: stringArgs[2],
+    options: {
+      expiration
+    }
+  }
+
+  let commands = {
+    "PING": handlePING,
+    "SET": handleSET,
+    "GET": handleGET
+  }
+
+  const response = commands[commandObject.command](commandObject)
+  return response
+}
+
 const server = net.createServer((socket) => {
   console.log("Client connected.");
 
@@ -93,10 +133,9 @@ const server = net.createServer((socket) => {
       // Convert to string
       const stringArgs = args.map((arg) => arg.toString("utf8"));
       console.log("Parsed command:", stringArgs);
-      socket.write('$5\r\nhello\r\n')
-      // socket.write(':100\r\n')
 
-      // handleCommand(stringArgs);
+      const response = handleCommand(stringArgs);
+      socket.write(response)
     }
   });
 
