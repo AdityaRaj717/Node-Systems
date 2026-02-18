@@ -93,6 +93,8 @@ const server = net.createServer((socket) => {
       // Convert to string
       const stringArgs = args.map((arg) => arg.toString("utf8"));
       console.log("Parsed command:", stringArgs);
+      socket.write('$5\r\nhello\r\n')
+      // socket.write(':100\r\n')
 
       // handleCommand(stringArgs);
     }
