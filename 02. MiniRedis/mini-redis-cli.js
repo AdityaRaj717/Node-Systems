@@ -46,9 +46,9 @@ function handleIntegers(buffer) {
     bytesConsumed: headerEnd + 2
   }
 }
-
 function handleBulkStrings(buffer) {
   // $5\r\nhello\r\n
+  // $-1\r\n
   let offset = 0
 
   let headerEnd = buffer.indexOf('\r\n', offset)
@@ -58,6 +58,7 @@ function handleBulkStrings(buffer) {
   let bulkLen = parseInt(buffer.slice(offset + 1, headerEnd).toString(), 10)
 
   if (isNaN(bulkLen)) throw new Error("Invalid bulk length")
+  if (bulkLen < 1) throw new Error("No results")
 
   offset = headerEnd + 2
 
@@ -164,6 +165,7 @@ client.on("data", (chunk) => {
       result = tryParseRESP(buffer);
     } catch (err) {
       console.log(err.message)
+      rl.prompt()
       break;
     }
     if (!result) break

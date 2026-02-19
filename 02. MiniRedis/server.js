@@ -2,6 +2,14 @@ import net from "node:net";
 
 const redisStorage = new Map()
 
+// Command Dispatcher
+const commands = {
+  "PING": handlePING,
+  "SET": handleSET,
+  "GET": handleGET
+}
+const allowedOptions = new Set(["EX"])
+
 function tryParseRESP(buffer) {
   let offset = 0;
 
@@ -61,42 +69,56 @@ function tryParseRESP(buffer) {
   };
 }
 
-function handlePING(commandObject) {
+function handlePING() {
   return '+PONG\r\n'
 }
 
-function handleSET({ key, value, options }) {
-  redisStorage.set(key, value)
+function handleSET(stringArgs) {
+  const key = stringArgs[1]
+  const value = stringArgs[2]
+  let expiresAt;
+
+  if (stringArgs.length > 3) {
+    for (let i = 3; i < stringArgs.length; i += 2) {
+      if (allowedOptions.has(stringArgs[i])) {
+        if (!stringArgs[i + 1]) return '-ERR expected a value for the option\r\n'
+        else if (isNaN(stringArgs[i + 1])) return '-ERR invalid option value provided\r\n'
+        else expiresAt = Date.now() + (parseInt(stringArgs[i + 1]) * 1000) // Expiry in seconds
+      }
+    }
+  }
+  redisStorage.set(key, { value, expiration: expiresAt })
   return '+OK\r\n'
 }
 
-function handleGET({ key }) {
-  console.log(`+${redisStorage.get(key)}\r\n`)
-  return `+${redisStorage.get(key)}\r\n`
+function handleGET(stringArgs) {
+  const result = redisStorage.get(stringArgs[1])
+  if (!result) {
+    console.log('No result found')
+    return `$-1\r\n`
+  }
+
+  if (result.expiration === undefined) return `+${result.value}\r\n`
+  if (result.expiration >= Date.now()) return `+${result.value}\r\n`
+  redisStorage.delete(stringArgs[1])
+  return `$-1\r\n`
 }
 
 function handleCommand(stringArgs) {
   // PING
   // SET key value EX 10
-  let command, key, value, expiration
 
-  let commandObject = {
-    command: stringArgs[0].toUpperCase(),
-    key: stringArgs[1],
-    value: stringArgs[2],
-    options: {
-      expiration
-    }
+  if (stringArgs.length === 0) return '-ERR empty command\r\n'
+
+  const commandName = stringArgs[0].toUpperCase()
+  const handler = commands[commandName]
+  if (!handler) return `-ERR unknown command ${commandName}\r\n`
+
+  try {
+    return handler(stringArgs)
+  } catch (err) {
+    return `-ERR internal error: ${err.message}\r\n`;
   }
-
-  let commands = {
-    "PING": handlePING,
-    "SET": handleSET,
-    "GET": handleGET
-  }
-
-  const response = commands[commandObject.command](commandObject)
-  return response
 }
 
 const server = net.createServer((socket) => {
