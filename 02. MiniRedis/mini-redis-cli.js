@@ -1,27 +1,38 @@
 import net from "node:net";
 import * as readline from "node:readline";
 
+// ---------------------------------------------------------
+// LAYER 1: THE TTY / REPL INTERFACE
+// ---------------------------------------------------------
+// `readline` wraps standard standard input (stdin) and output (stdout).
+// It prevents the terminal from immediately echoing every single keystroke 
+// and gives us a nice prompt, creating a true shell experience.
 const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout,
   prompt: "mini-redis> ",
 });
 
+
+// ---------------------------------------------------------
+// LAYER 2: THE RESP DESERIALIZER (Server -> Client)
+// ---------------------------------------------------------
+// These functions parse the raw bytes coming BACK from the server.
+// They return both the payload (`bulk`) and how many bytes it took up 
+// (`bytesConsumed`) so the network layer knows how to slide the buffer forward.
+
 function handleSimpleStrings(buffer) {
   let offset = 0
-  // +OK\r\n
   const headerEnd = buffer.indexOf('\r\n', offset)
-  if (headerEnd === -1) return null
+  if (headerEnd === -1) return null // Packet is fragmented. Wait for more data.
 
   const bulk = buffer.slice(offset + 1, headerEnd)
   const bytesConsumed = headerEnd + 2
-
   return { bulk, bytesConsumed }
 }
-function handleSimpleErrors(buffer) {
-  // -ERR something\r\n
-  let offset = 0
 
+function handleSimpleErrors(buffer) {
+  let offset = 0
   const headerEnd = buffer.indexOf('\r\n', offset)
   if (headerEnd === -1) return null
 
@@ -31,30 +42,24 @@ function handleSimpleErrors(buffer) {
     bytesConsumed: headerEnd + 2
   }
 }
-function handleIntegers(buffer) {
-  // :100\r\n
-  let offset = 0
 
+function handleIntegers(buffer) {
+  let offset = 0
   const headerEnd = buffer.indexOf('\r\n', offset)
   if (headerEnd === -1) return null
 
+  // Base 10 parsing is critical here.
   const integer = parseInt(buffer.slice(offset + 1, headerEnd), 10)
   if (isNaN(integer)) throw new Error('Invalid integer')
 
-  return {
-    bulk: integer,
-    bytesConsumed: headerEnd + 2
-  }
+  return { bulk: integer, bytesConsumed: headerEnd + 2 }
 }
-function handleBulkStrings(buffer) {
-  // $5\r\nhello\r\n
-  // $-1\r\n
-  let offset = 0
 
+function handleBulkStrings(buffer) {
+  let offset = 0
   let headerEnd = buffer.indexOf('\r\n', offset)
   if (headerEnd === -1) return null
 
-  // FIX: slice returns the buffer so need to convert to string first before parsing as int
   let bulkLen = parseInt(buffer.slice(offset + 1, headerEnd).toString(), 10)
 
   if (isNaN(bulkLen)) throw new Error("Invalid bulk length")
@@ -62,37 +67,34 @@ function handleBulkStrings(buffer) {
 
   offset = headerEnd + 2
 
+  // Backpressure Check: Ensures we don't try to read a 500-byte string 
+  // if only 200 bytes have arrived over the network so far.
   if (buffer.length < offset + bulkLen + 2) return null
 
   let bulk = buffer.slice(offset, offset + bulkLen)
-
   offset += bulkLen + 2
 
-  return {
-    bulk,
-    bytesConsumed: offset
-  }
+  return { bulk, bytesConsumed: offset }
 }
 
+// The Deserializer Dispatcher.
+// Uses Hexadecimal checks for insane performance. Reading buffer[0] === 0x2B 
+// is infinitely faster than converting to string and checking buffer[0] === "+".
 function tryParseRESP(buffer) {
-  // NOTE: Checks whether the bytes are enough for parsing
-  // If it is then it parses
-
   let result;
-
   if (buffer.length < 1) return null;
 
   switch (buffer[0]) {
-    case 0x2B:
+    case 0x2B: // '+' (Simple String)
       result = handleSimpleStrings(buffer)
       break
-    case 0x2D:
+    case 0x2D: // '-' (Error)
       result = handleSimpleErrors(buffer)
       break
-    case 0x3A:
+    case 0x3A: // ':' (Integer)
       result = handleIntegers(buffer)
       break
-    case 0x24:
+    case 0x24: // '$' (Bulk String)
       result = handleBulkStrings(buffer)
       break
     default:
@@ -103,8 +105,15 @@ function tryParseRESP(buffer) {
   return { bulk: result.bulk, bytesConsumed: result.bytesConsumed, }
 }
 
-// Convert into tokens
-// Ex. ["SET", "key", "value"]
+
+// ---------------------------------------------------------
+// LAYER 3: THE LEXER & SERIALIZER (Client -> Server)
+// ---------------------------------------------------------
+
+// A hand-rolled State Machine Lexer.
+// It iterates through the string character by character to group words,
+// specifically handling quoted strings so `SET msg "Hello World"` doesn't 
+// split "Hello" and "World" into two arguments.
 function tokenizer(rawString) {
   let tokens = [];
   let current = "";
@@ -126,37 +135,40 @@ function tokenizer(rawString) {
     } else current += rawString[i];
   }
 
-  if (insideQuotes) return null;
+  if (insideQuotes) return null; // Unclosed quote syntax error
   else if (current !== "") tokens.push(current);
 
   return tokens;
 }
 
-// Encode into RESP (Redis Serialization Protocol) format
-// *3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n
+// Converts the parsed tokens into the raw RESP byte format for the server.
 function encodeRESP(tokens) {
   let encoded = "";
   encoded += `*${tokens.length}\r\n`;
   for (let i = 0; i < tokens.length; i++) {
+    // CRITICAL SYSTEMS KNOWLEDGE:
+    // Buffer.byteLength() calculates actual memory footprint (e.g., emojis take 4 bytes).
+    // string.length only calculates character count. This prevents massive protocol corruption.
     encoded += `$${Buffer.byteLength(tokens[i])}\r\n${tokens[i]}\r\n`;
   }
   return encoded;
 }
 
+
+// ---------------------------------------------------------
+// LAYER 4: THE NETWORK & EVENT LOOP
+// ---------------------------------------------------------
+
 const client = net.createConnection(6379, "localhost", () => {
   console.log("Connected to Server");
-  rl.prompt();
+  rl.prompt(); // Trigger the first command prompt
 });
-
-// NOTE: Buffering the stream of bytes
-// Initialize an empty buffer
-// Buffer is a subclass of the Uint8Array and has extra methods
-// like writeUInt32BE, readInt16LE, toString() etc
 
 let buffer = Buffer.alloc(0);
 
+// Asynchronous Network Listener
 client.on("data", (chunk) => {
-  buffer = Buffer.concat([buffer, chunk]);
+  buffer = Buffer.concat([buffer, chunk]); // Coalescing incoming memory
 
   while (true) {
     let result;
@@ -168,15 +180,19 @@ client.on("data", (chunk) => {
       rl.prompt()
       break;
     }
-    if (!result) break
+
+    if (!result) break // Fragmented packet, wait for more chunks
 
     const { bulk, bytesConsumed } = result
     console.log(isNaN(bulk) ? bulk.toString() : bulk)
-    rl.prompt();
+    rl.prompt(); // Prompt the user for the NEXT command
+
+    // Slide the buffer forward, throwing away the memory we just parsed
     buffer = buffer.subarray(bytesConsumed)
   }
 });
 
+// Asynchronous Input Listener (Listens to your keyboard)
 rl.on("line", (line) => {
   const rawData = line.toString().trim();
   if (rawData.toLowerCase() === "exit") {
@@ -192,9 +208,10 @@ rl.on("line", (line) => {
   }
 
   const encodedRESP = encodeRESP(tokens);
-  client.write(encodedRESP);
+  client.write(encodedRESP); // Send the raw memory to Layer 4 TCP
 });
 
+// Graceful Termination Hook
 rl.on("SIGINT", () => {
   rl.question("Are you sure you want to exit? (y/n) ", (answer) => {
     if (answer.match(/^y(es)?$/i)) {
